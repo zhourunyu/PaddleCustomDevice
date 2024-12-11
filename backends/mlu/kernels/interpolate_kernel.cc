@@ -54,9 +54,9 @@ void InterpolateKernel(
     phi::DenseTensor* out) {
   auto input_dims = x.dims();
   PADDLE_ENFORCE_GE(input_dims.size(),
-                    4,
+                    3,
                     phi::errors::External("MLU Interpolate kernel supports x "
-                                          "range greater or equal than 4."));
+                                          "range greater or equal than 3."));
   PADDLE_ENFORCE_LE(input_dims.size(),
                     5,
                     phi::errors::External("MLU Interpolate kernel supports x "
@@ -74,10 +74,14 @@ void InterpolateKernel(
   // Priority: SizeTensor > OutSize > Scale > scale > out_h & out_w
   if (size_tensor && size_tensor->size() > 0) {
     // have SizeTensor
-    VLOG(5) << "[Interp] get out_w and out_w from SizeTensor";
+    VLOG(5) << "[Interp] get out_w from SizeTensor";
     auto list_new_shape_tensor = size_tensor.get();
 
-    if (list_new_shape_tensor.size() <= 2) {
+    if (list_new_shape_tensor.size() == 1) {
+      auto output_w =
+          get_new_data_from_tensor<int>(dev_ctx, list_new_shape_tensor[0]);
+      out_w = output_w[0];
+    } else if (list_new_shape_tensor.size() == 2) {
       auto output_h =
           get_new_data_from_tensor<int>(dev_ctx, list_new_shape_tensor[0]);
       auto output_w =
@@ -96,19 +100,26 @@ void InterpolateKernel(
       out_d = output_d[0];
     }
   } else if (out_size) {
-    VLOG(5) << "[Interp] get out_w and out_w from OutSize";
+    VLOG(5) << "[Interp] get out_w from OutSize";
     auto out_size_data =
         get_new_data_from_tensor<int>(dev_ctx, out_size.get_ptr());
-    out_h = out_size_data[0];
-    out_w = out_size_data[1];
+    if (out_size_data.size() == 1) {
+      out_w = out_size_data[0];
+    } else if (out_size_data.size() == 2) {
+      out_h = out_size_data[0];
+      out_w = out_size_data[1];
+    } else {
+      out_d = out_size_data[0];
+      out_h = out_size_data[1];
+      out_w = out_size_data[2];
+    }
   } else {
     if (scale_tensor) {
-      VLOG(5) << "[Interp] get out_w and out_w from ScaleTensor";
+      VLOG(5) << "[Interp] get out_w from ScaleTensor";
       std::vector<float> scale_data;
       scale_data =
           get_new_data_from_tensor<float>(dev_ctx, scale_tensor.get_ptr());
       if (scale_data.size() == 1) {
-        scale_h = scale_data[0];
         scale_w = scale_data[0];
       } else if (scale_data.size() == 2) {
         scale_h = scale_data[0];
@@ -126,15 +137,16 @@ void InterpolateKernel(
               "The scale_w in input 'Scale' Tensor of Operator(interpolate) "
               "should be greater than 0, but received value is %d.",
               scale_w));
-      PADDLE_ENFORCE_EQ(
-          scale_h > 0,
-          true,
-          phi::errors::InvalidArgument(
-              "The scale_h in input 'Scale' Tensor of Operator(interpolate) "
-              "should be greater than 0, but received value is %d.",
-              scale_h));
     } else {
-      if (scale.size() > 1 && scale.size() <= 2) {
+      if (scale.size() == 1) {
+        scale_w = scale[0];
+
+        PADDLE_ENFORCE_EQ(
+            scale_w > 0,
+            true,
+            phi::errors::InvalidArgument("scale  of Op(interpolate) "
+                                         "should be greater than 0."));
+      } else if (scale.size() == 2) {
         scale_h = scale[0];
         scale_w = scale[1];
 
@@ -154,10 +166,13 @@ void InterpolateKernel(
                                          "should be greater than 0."));
       }
     }
-    if (scale_h > 0. && scale_w > 0.) {
-      VLOG(5) << "[Interp] get out_w and out_w from scale";
-      out_h = static_cast<int>(in_h * scale_h);
+    if (scale_w > 0.) {
+      VLOG(5) << "[Interp] get out_w from scale";
       out_w = static_cast<int>(in_w * scale_w);
+    }
+
+    if (scale_h > 0. ) {
+      out_h = static_cast<int>(in_h * scale_h);
     }
 
     if (scale_d > 0.) {
@@ -172,11 +187,6 @@ void InterpolateKernel(
   VLOG(5) << "[Interp] n: " << n << " in_d: " << in_d << " in_h: " << in_h
           << " in_w: " << in_w << " out_d: " << out_d << " out_h: " << out_h
           << " out_w: " << out_w << " c: " << c;
-  PADDLE_ENFORCE_GT(out_h,
-                    0,
-                    phi::errors::InvalidArgument("out_h in Attr(out_shape) of "
-                                                 "Op(interpolate) "
-                                                 "should be greater than 0."));
   PADDLE_ENFORCE_GT(out_w,
                     0,
                     phi::errors::InvalidArgument("out_w in Attr(out_shape) of "
@@ -189,7 +199,95 @@ void InterpolateKernel(
   phi::DDim dim_in, dim_in_trans, dim_out, dim_out_trans;
   Tensor transformed_input, transformed_output;
   bool need_transpose = input_dims.size() != 2;
-  if (input_dims.size() == 4) {
+  if (input_dims.size() == 3) {
+    PADDLE_ENFORCE_EQ(
+        interp_method,
+        "linear",
+        phi::errors::External("MLU Interpolate kernel only supports 3D "
+                              "data in linear mode."));
+    need_transpose &= data_layout == DataLayout::kNCHW;
+    if (need_transpose) {
+      // if need_transpose, do the following
+      // 1. transpose x NCW -> NWC
+      // 2. interpolation in(NWC) -> out(NWC)
+      // 3. transpose out NWC -> HCW
+      // dim_in = {n, c, in_w};
+      dim_in_trans = {n, in_w, c};
+      dim_out = {n, c, out_w};
+      dim_out_trans = {n, out_w, c};
+      out->Resize(dim_out);
+      dev_ctx.template Alloc<T>(out);
+
+      if (in_w == out_w) {
+        TensorCopy(dev_ctx, x, false, out);
+        return;
+      }
+      // do transpose on x tensor, then do interpolation
+      MLUCnnlTensorDesc input_desc(
+          x, CNNL_LAYOUT_NCL, ToCnnlDataType(x.dtype()));
+
+      transformed_input.Resize(dim_in_trans);
+      dev_ctx.template Alloc<T>(&transformed_input);
+      transformed_output.Resize(dim_out_trans);
+      dev_ctx.template Alloc<T>(&transformed_output);
+
+      MLUCnnlTensorDesc input_reshaped_desc(
+          transformed_input,
+          CNNL_LAYOUT_NLC,
+          ToCnnlDataType(transformed_input.dtype()));
+      const std::vector<int> perm = {0, 2, 1};
+      MLUCnnl::Transpose(dev_ctx,
+                         perm,
+                         input_dims.size(),
+                         input_desc.get(),
+                         GetBasePtr(&x),
+                         input_reshaped_desc.get(),
+                         GetBasePtr(&transformed_input));
+    } else {
+      // if no need_transpose, do the following
+      // 1. interpolation in(NWC) -> out(NWC)
+      // dim_in = {n, in_w, c};
+      dim_out = {n, out_w, c};
+      out->Resize(dim_out);
+      dev_ctx.template Alloc<T>(out);
+
+      if (in_w == out_w) {
+        TensorCopy(dev_ctx, x, false, out);
+        return;
+      }
+      transformed_input = x;
+      transformed_output = *out;
+    }
+
+    MLUCnnlTensorDesc input_desc(transformed_input,
+                                 CNNL_LAYOUT_NLC,
+                                 ToCnnlDataType(transformed_input.dtype()));
+    MLUCnnlTensorDesc output_desc(transformed_output,
+                                  CNNL_LAYOUT_NLC,
+                                  ToCnnlDataType(transformed_output.dtype()));
+    MLUCnnl::Interp(dev_ctx,
+                    GetMLUCnnlInterpMode(interp_method),
+                    align_corners,
+                    align_center,
+                    input_desc.get(),
+                    GetBasePtr(&transformed_input),
+                    output_desc.get(),
+                    GetBasePtr(&transformed_output));
+
+    if (need_transpose) {
+      // if need_transpose, reshape out back to NCW
+      const std::vector<int> perm = {0, 2, 1};
+      MLUCnnlTensorDesc output_reshape_desc(
+          *out, CNNL_LAYOUT_NCL, ToCnnlDataType(out->dtype()));
+      MLUCnnl::Transpose(dev_ctx,
+                         perm,
+                         dim_out_trans.size(),
+                         output_desc.get(),
+                         GetBasePtr(&transformed_output),
+                         output_reshape_desc.get(),
+                         GetBasePtr(out));
+    }
+  } else if (input_dims.size() == 4) {
     // need to do transpose if layout is kNCHW
     need_transpose &= data_layout == DataLayout::kNCHW;
     if (need_transpose) {
@@ -570,6 +668,38 @@ void BilinearInterpKernel(
 }
 
 template <typename T, typename Context>
+void LinearInterpKernel(
+    const Context& dev_ctx,
+    const phi::DenseTensor& x,
+    const paddle::optional<phi::DenseTensor>& out_size,
+    const paddle::optional<std::vector<const phi::DenseTensor*>>& size_tensor,
+    const paddle::optional<phi::DenseTensor>& scale_tensor,
+    const std::string& data_layout,
+    int out_d,
+    int out_h,
+    int out_w,
+    const std::vector<float>& scale,
+    const std::string& interp_method,
+    bool align_corners,
+    int align_mode,
+    phi::DenseTensor* out) {
+  InterpolateKernel<T, Context>(dev_ctx,
+                                x,
+                                out_size,
+                                size_tensor,
+                                scale_tensor,
+                                data_layout,
+                                out_d,
+                                out_h,
+                                out_w,
+                                scale,
+                                interp_method,
+                                align_corners,
+                                align_mode,
+                                out);
+}
+
+template <typename T, typename Context>
 void NearestInterpKernel(
     const Context& dev_ctx,
     const phi::DenseTensor& x,
@@ -603,6 +733,40 @@ void NearestInterpKernel(
 
 template <typename T, typename Context>
 void BilinearInterpGradKernel(
+    const Context& dev_ctx,
+    const phi::DenseTensor& x,
+    const paddle::optional<phi::DenseTensor>& out_size,
+    const paddle::optional<std::vector<const phi::DenseTensor*>>& size_tensor,
+    const paddle::optional<phi::DenseTensor>& scale_tensor,
+    const phi::DenseTensor& out_grad,
+    const std::string& data_layout,
+    int out_d,
+    int out_h,
+    int out_w,
+    const std::vector<float>& scale,
+    const std::string& interp_method,
+    bool align_corners,
+    int align_mode,
+    phi::DenseTensor* x_grad) {
+  InterpolateGradKernel<T, Context>(dev_ctx,
+                                    x,
+                                    out_size,
+                                    size_tensor,
+                                    scale_tensor,
+                                    out_grad,
+                                    data_layout,
+                                    out_d,
+                                    out_h,
+                                    out_w,
+                                    scale,
+                                    interp_method,
+                                    align_corners,
+                                    align_mode,
+                                    x_grad);
+}
+
+template <typename T, typename Context>
+void LinearInterpGradKernel(
     const Context& dev_ctx,
     const phi::DenseTensor& x,
     const paddle::optional<phi::DenseTensor>& out_size,
@@ -708,6 +872,28 @@ PD_REGISTER_PLUGIN_KERNEL(bilinear_interp_grad,
                           mlu,
                           ALL_LAYOUT,
                           custom_kernel::BilinearInterpGradKernel,
+                          float,
+                          phi::dtype::float16) {
+  kernel->InputAt(1).SetBackend(phi::Backend::ALL_BACKEND);
+  kernel->InputAt(2).SetBackend(phi::Backend::ALL_BACKEND);
+  kernel->InputAt(3).SetBackend(phi::Backend::ALL_BACKEND);
+}
+
+PD_REGISTER_PLUGIN_KERNEL(linear_interp,
+                          mlu,
+                          ALL_LAYOUT,
+                          custom_kernel::LinearInterpKernel,
+                          float,
+                          phi::dtype::float16) {
+  kernel->InputAt(1).SetBackend(phi::Backend::ALL_BACKEND);
+  kernel->InputAt(2).SetBackend(phi::Backend::ALL_BACKEND);
+  kernel->InputAt(3).SetBackend(phi::Backend::ALL_BACKEND);
+}
+
+PD_REGISTER_PLUGIN_KERNEL(linear_interp_grad,
+                          mlu,
+                          ALL_LAYOUT,
+                          custom_kernel::LinearInterpGradKernel,
                           float,
                           phi::dtype::float16) {
   kernel->InputAt(1).SetBackend(phi::Backend::ALL_BACKEND);
