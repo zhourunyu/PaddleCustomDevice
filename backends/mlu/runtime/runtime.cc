@@ -194,8 +194,8 @@ inline size_t get_current_device_id() {
 C_Status CreateStream(const C_Device device, C_Stream *stream) {
   mluStream_t mlu_stream = new mluStream();
 
-  cnrtQueue_t queue;
-  PADDLE_ENFORCE_MLU_SUCCESS(cnrtQueueCreate(&queue));
+  cnrtQueue_t queue = nullptr;
+  // PADDLE_ENFORCE_MLU_SUCCESS(cnrtQueueCreate(&queue));
 
   cnnlHandle_t handle;
   PADDLE_ENFORCE_MLU_SUCCESS(cnnlCreate(&handle));
@@ -217,7 +217,7 @@ C_Status CreateStream(const C_Device device, C_Stream *stream) {
 C_Status DestroyStream(const C_Device device, C_Stream stream) {
   PADDLE_ENFORCE_MLU_SUCCESS(cnnlDestroy(GetHandle(stream)));
   PADDLE_ENFORCE_MLU_SUCCESS(mluOpDestroy(GetOpHandle(stream)));
-  PADDLE_ENFORCE_MLU_SUCCESS(cnrtQueueDestroy(GetQueue(stream)));
+  // PADDLE_ENFORCE_MLU_SUCCESS(cnrtQueueDestroy(GetQueue(stream)));
 
   mluStream_t mlu_stream = reinterpret_cast<mluStream_t>(stream);
   delete[] mlu_stream;
