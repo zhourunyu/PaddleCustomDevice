@@ -1977,6 +1977,37 @@ class MLUCnnl {
                                 void* diff_weight,
                                 void* diff_bias);
 
+  static void GroupNormForward(const Context& ctx,
+                               const cnnlTensorDescriptor_t x_desc,
+                               const void* x,
+                               const cnnlTensorDescriptor_t weight_bias_desc,
+                               const void* weight,
+                               const void* bias,
+                               float eps,
+                               int groups,
+                               const cnnlTensorDescriptor_t y_desc,
+                               void* y,
+                               const cnnlTensorDescriptor_t mean_rstd_desc,
+                               void* saved_mean,
+                               void* saved_rstd);
+
+  static void GroupNormBackward(const Context& ctx,
+                                const cnnlTensorDescriptor_t x_desc,
+                                const void* x,
+                                const cnnlTensorDescriptor_t diff_z_desc,
+                                const void* diff_z,
+                                const cnnlTensorDescriptor_t weight_bias_desc,
+                                const void* weight,
+                                const cnnlTensorDescriptor_t mean_rstd_desc,
+                                const void* saved_mean,
+                                const void* saved_rstd,
+                                int groups,
+                                int NC,
+                                const cnnlTensorDescriptor_t diff_x_desc,
+                                void* diff_x,
+                                void* diff_weight,
+                                void* diff_bias);
+
   static void Normalize(const Context& ctx,
                         const cnnlNormalizeDescriptor_t normalize_desc,
                         const cnnlTensorDescriptor_t input_desc,

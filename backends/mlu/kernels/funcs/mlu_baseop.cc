@@ -3781,6 +3781,95 @@ NormalizeDesc::~NormalizeDesc() {
                                                       diff_bias));
 }
 
+/* static */ void MLUCnnl::GroupNormForward(
+    const Context& ctx,
+    const cnnlTensorDescriptor_t x_desc,
+    const void* x,
+    const cnnlTensorDescriptor_t weight_bias_desc,
+    const void* weight,
+    const void* bias,
+    float eps,
+    int groups,
+    const cnnlTensorDescriptor_t y_desc,
+    void* y,
+    const cnnlTensorDescriptor_t mean_rstd_desc,
+    void* saved_mean,
+    void* saved_rstd) {
+  cnnlHandle_t handle = GetHandleFromCTX(ctx);
+
+  size_t workspace_size;
+  PADDLE_ENFORCE_MLU_SUCCESS(
+      cnnlGetGroupNormForwardWorkspaceSize(handle, groups, x_desc, &workspace_size));
+
+  Tensor workspace;
+  workspace.Resize({static_cast<int64_t>(workspace_size)});
+  void* workspace_ptr = ctx.Alloc(&workspace, DataType::INT8, workspace_size);
+
+  PADDLE_ENFORCE_MLU_SUCCESS(cnnlGroupNormForward_v3(handle,
+                                                     eps,
+                                                     groups,
+                                                     x_desc,
+                                                     x,
+                                                     weight_bias_desc,
+                                                     weight,
+                                                     bias,
+                                                     workspace_ptr,
+                                                     workspace_size,
+                                                     y_desc,
+                                                     y,
+                                                     mean_rstd_desc,
+                                                     saved_mean,
+                                                     saved_rstd));
+}
+
+/* static */ void MLUCnnl::GroupNormBackward(
+    const Context& ctx,
+    const cnnlTensorDescriptor_t x_desc,
+    const void* x,
+    const cnnlTensorDescriptor_t diff_z_desc,
+    const void* diff_z,
+    const cnnlTensorDescriptor_t weight_bias_desc,
+    const void* weight,
+    const cnnlTensorDescriptor_t mean_rstd_desc,
+    const void* saved_mean,
+    const void* saved_rstd,
+    int groups,
+    int NC,
+    const cnnlTensorDescriptor_t diff_x_desc,
+    void* diff_x,
+    void* diff_weight,
+    void* diff_bias) {
+  cnnlHandle_t handle = GetHandleFromCTX(ctx);
+  size_t workspace_size;
+  PADDLE_ENFORCE_MLU_SUCCESS(cnnlGetGroupNormBackwardWorkspaceSize(
+      handle, NC, &workspace_size));
+
+  Tensor workspace;
+  workspace.Resize({static_cast<int64_t>(workspace_size)});
+  void* workspace_ptr = ctx.Alloc(&workspace, DataType::INT8, workspace_size);
+
+  PADDLE_ENFORCE_MLU_SUCCESS(cnnlGroupNormBackward(handle,
+                                                   x_desc,
+                                                   x,
+                                                   diff_z_desc,
+                                                   diff_z,
+                                                   weight_bias_desc,
+                                                   weight,
+                                                   mean_rstd_desc,
+                                                   saved_mean,
+                                                   mean_rstd_desc,
+                                                   saved_rstd,
+                                                   groups,
+                                                   diff_x_desc,
+                                                   diff_x,
+                                                   weight_bias_desc,
+                                                   diff_weight,
+                                                   weight_bias_desc,
+                                                   diff_bias,
+                                                   workspace_ptr,
+                                                   workspace_size));
+}
+
 /* static */ void MLUCnnl::Normalize(
     const Context& ctx,
     const cnnlNormalizeDescriptor_t normalize_desc,
